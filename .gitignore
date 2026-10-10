@@ -1,0 +1,18 @@
+# 账号库存档：内含明文 access token，绝不可提交
+# Account store: contains plaintext access tokens, never commit
+
+accounts.json
+*.bak
+*.bak.*
+.lock
+__pycache__/
+*.pyc
+
+# 备份目录 / backups
+backups/
+
+# 编辑器与系统 / editors and OS
+.vscode/
+.idea/
+.DS_Store
+*~
