@@ -28,12 +28,29 @@ import credits as credits_mod
 
 HOME = os.path.expanduser("~")
 
+
+def _discover_cred_file():
+    """定位 CLI 凭证文件。
+
+    正常路径是 CLI 自己建的CodeBuddyExtension 目录，但不同安装方式
+    （deb/ AppImage / snap / 手动）可能落在别处，所以额外探测几处。
+    """
+    candidates = [
+        os.path.join(HOME, ".local/share/CodeBuddyExtension/Data/Public/auth",
+                     "Tencent-Cloud.coding-copilot.info"),
+        os.path.join(HOME, ".config/CodeBuddyExtension/Data/Public/auth",
+                     "Tencent-Cloud.coding-copilot.info"),
+        os.path.join(HOME, ".codebuddy/auth",
+                     "Tencent-Cloud.coding-copilot.info"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
 # 凭证文件：CLI 与 VS Code 插件共享的账号库
-CRED_FILE = os.path.join(
-    HOME,
-    ".local/share/CodeBuddyExtension/Data/Public/auth",
-    "Tencent-Cloud.coding-copilot.info",
-)
+CRED_FILE = _discover_cred_file()
 
 SETTINGS_FILE = os.path.join(HOME, ".codebuddy/settings.json")
 STORAGE_DIR = os.path.join(HOME, ".codebuddy/local_storage")
@@ -462,6 +479,11 @@ def cmd_doctor(_args):
             problems += 1
     else:
         print("  [问题] 不存在")
+        print("         你还没有登录过 CodeBuddy CLI，或凭证路径与预期不同。")
+        print("         请先运行 `codebuddy` 完成一次浏览器登录，然后重试。")
+        print("         若已登录，可在 ~/.local/share/CodeBuddyExtension/Data/Public/auth/")
+        print("         与 ~/.config/CodeBuddyExtension/Data/Public/auth/ 下查找")
+        print("         Tencent-Cloud.coding-copilot.info 后手动调整 cbs.py 顶部的 CRED_FILE。")
         problems += 1
 
     mode = existing_mode(CRED_FILE, 0)
