@@ -5,6 +5,16 @@
 
 [English](#english) | [中文](#中文)
 
+> **需要协助安装或排查？** 把 [`AGENTS.md`](./AGENTS.md) 交给你的 AI Agent（Claude Code、
+> CodeBuddy Code、Cursor 等），它包含环境确认、安装流程、常见问题排查和代码结构说明。
+>
+> **Need help installing or troubleshooting?** Hand [`AGENTS.md`](./AGENTS.md) to your
+> AI agent — it has the full setup flow, common failure modes, and code structure notes.
+>
+> ⚠️ **Status / 状态**：目前仅在 **Ubuntu 22.04 (WSL2) + CodeBuddy Code CLI 2.164.0** 上实测通过。
+> 原生 Linux、其他发行版、CLI 其他版本均未验证，遇到问题请先跑 `cbs doctor` 并反馈。
+> Currently verified on Ubuntu 22.04 (WSL2) with CLI 2.164.0 only.
+
 ---
 
 ## 中文
@@ -141,10 +151,13 @@ Token 有效期与积分到期是两回事：token 过期 `cbs ls` 的 Token 列
 
 ### 已知限制
 
+- **仅在 Ubuntu 22.04 (WSL2) + CLI 2.164.0 上实测通过**。原生 Linux、其他发行版、其他
+  CLI 版本未验证，遇到问题先跑 `cbs doctor`
 - 仅支持 CodeBuddy Code CLI，不管理 WorkBuddy桌面端、VS Code 插件、JetBrains 插件
 - 但**切换会同时影响 VS Code CodeBuddy 插件**——两者共享同一个账号库
 - 积分查询是实时请求，无缓存。账号多时 `cbs ls` 会变慢，用 `--no-credits` 跳过
 - 国内版与国际版需分别查询，接口 host 按账号 `domain` 自动选择
+- 积分接口的 401/403/404 错误路径未验证（所有测试账号均返回 200）
 
 ### 工作原理
 
@@ -182,7 +195,7 @@ Ubuntu 22.04 ships 2.35. `cbs` manipulates the credential file directly and need
 
 ### Requirements
 
-- Linux or WSL, Python 3.7+
+- Linux or WSL (verified on Ubuntu 22.04 / WSL2), Python 3.7+
 - CodeBuddy Code CLI installed (`codebuddy` command available)
 - At least one logged-in CodeBuddy account
 
@@ -312,10 +325,13 @@ expiry in the `可用积分` column.
 
 ### Known limitations
 
+- **Verified on Ubuntu 22.04 (WSL2) with CLI 2.164.0 only.** Native Linux, other distros, and
+  other CLI versions are untested — run `cbs doctor` first when reporting problems
 - Covers CodeBuddy Code CLI only — not the WorkBuddy desktop app, VS Code plugin, or JetBrains plugin
 - However, **switching also affects the VS Code CodeBuddy plugin** — both share one account store
 - Credit queries are live with no caching. With many accounts `cbs ls` gets slow; use `--no-credits`
 - CN and intl accounts are queried separately; the host is chosen from each account's `domain`
+- Error paths (401/403/404) of the credits API are untested — every test account returned 200
 
 ### How it works
 
