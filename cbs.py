@@ -23,6 +23,8 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 
 import credits as credits_mod
 
@@ -783,6 +785,122 @@ def cmd_import(args):
 
 # ---------- use ----------
 
+def refresh_auth(record):
+    """用 refreshToken 调服务端刷新接口，返回补全到期时间的新 auth dict。
+
+    接口规格（取自 CLI 二进制内嵌实现并实测）：
+      POST {host}/v2/plugin/auth/token/refresh
+      请求头 X-Refresh-Token / X-Auth-Refresh-Source: plugin / X-User-Id / X-Domain
+      请求体 {}，响应 data 即新 auth。
+    refreshToken 是轮换的：每次刷新作废旧值，必须把新值存回。
+    """
+    auth = record.get("auth") or {}
+    account = record.get("account") or {}
+    refresh_token = auth.get("refreshToken")
+    uid = account.get("uid")
+    domain = auth.get("domain")
+    if not refresh_token or not uid:
+        raise CbsError("缺少 refreshToken 或 uid", EXIT_CORRUPT)
+
+    host = "https://www.codebuddy.ai" if region_of(domain) == REGION_PUBLIC \
+        else "https://www.codebuddy.cn"
+    request = urllib.request.Request(
+        host + "/v2/plugin/auth/token/refresh",
+        data=b"{}",
+        headers={
+            "X-Refresh-Token": refresh_token,
+            "X-Auth-Refresh-Source": "plugin",
+            "X-User-Id": uid,
+            "X-Domain": domain or "",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": credits_mod.USER_AGENT,
+            "Origin": host,
+            "Referer": host + "/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=credits_mod.TIMEOUT) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise CbsError("HTTP %s（refreshToken 很可能已作废，需重新登录）"
+                       % error.code)
+    except urllib.error.URLError as error:
+        raise CbsError("网络错误：%s" % error.reason)
+
+    new_auth = body.get("data")
+    if body.get("code") not in (0, None) or not isinstance(new_auth, dict) \
+            or not new_auth.get("accessToken"):
+        raise CbsError("刷新被拒：code=%s msg=%s"
+                       % (body.get("code"), body.get("msg")))
+
+    # 刷新响应只有 expiresIn/refreshExpiresIn，到期时间按 CLI 行为自己补全
+    now_ms = int(time.time() * 1000)
+    new_auth["expiresAt"] = now_ms + _num(new_auth.get("expiresIn")) * 1000
+    new_auth["refreshExpiresAt"] = now_ms + _num(new_auth.get("refreshExpiresIn")) * 1000
+    new_auth["lastRefreshTime"] = now_ms
+    return new_auth
+
+
+def _num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def cmd_keepalive(args):
+    """用库存档的 refreshToken 刷新账号，实现长期保活。
+
+    每次刷新作废旧 refreshToken 并换发新的（30 天 access + 60 天 refresh），
+    只要每 60 天内至少刷一次，账号即可无限续命，不再需要重新登录。
+    """
+    store = load_store()
+    if args.all:
+        targets = sorted(store["accounts"])
+    elif args.alias:
+        if args.alias not in store["accounts"]:
+            raise CbsError("未知别名 %s" % args.alias, EXIT_USAGE)
+        targets = [args.alias]
+    else:
+        raise CbsError("指定别名或 --all", EXIT_USAGE)
+
+    current = live_uid()
+    now_ms = int(time.time() * 1000)
+    ok = skipped = failed = 0
+    for alias in targets:
+        record = store["accounts"][alias]
+        # 当前生效账号跳过：CLI 自己会续期，用库存档快照刷新反而会作废
+        # 现场凭证的 token 族，导致 CLI 下次续期失败被登出。
+        if record.get("uid") == current:
+            print("  跳过 %s（当前生效账号，由 CLI 自动续期）" % alias)
+            skipped += 1
+            continue
+        try:
+            new_auth = refresh_auth(record)
+        except CbsError as error:
+            print("  失败 %s：%s" % (alias, error))
+            failed += 1
+            continue
+        record["auth"] = new_auth
+        record["imported_at"] = now_ms
+        record["domain"] = new_auth.get("domain")
+        store["accounts"][alias] = record
+        ok += 1
+        print("  续命 %s：access 至 %s，refresh 至 %s"
+              % (alias,
+                 fmt_time(new_auth.get("expiresAt")),
+                 fmt_time(new_auth.get("refreshExpiresAt"))))
+
+    if ok:
+        save_store(store)
+    print("\n完成：续命 %d，跳过 %d，失败 %d" % (ok, skipped, failed))
+    if failed:
+        print("失败的账号需重新登录救活：cbs use <别名> → codebuddy 内 /login → "
+              "cbs import --as <别名> --force")
+    return EXIT_OK if not failed else EXIT_FAIL
+
+
 def sync_settings_region(region):
     settings = read_json(SETTINGS_FILE, "settings.json", missing_ok=True) or {}
     env = settings.get("env")
@@ -1064,6 +1182,11 @@ def build_parser():
     p_sync = sub.add_parser("sync", help="把现场凭证回写库存档（CLI 续期后用）")
     p_sync.add_argument("alias")
     p_sync.set_defaults(func=cmd_sync)
+
+    p_ka = sub.add_parser("keepalive", help="用 refreshToken 刷新账号（长期保活）")
+    p_ka.add_argument("alias", nargs="?")
+    p_ka.add_argument("--all", action="store_true", help="刷新全部可刷新账号")
+    p_ka.set_defaults(func=cmd_keepalive)
 
     p_rm = sub.add_parser("rm", help="从库存档删除账号")
     p_rm.add_argument("alias")
