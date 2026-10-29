@@ -115,18 +115,27 @@ cbs use work
 
 常用参数：`--dry-run` 只看不改、`--yes` 跳过确认、`--kill` 关闭运行中的 CLI。
 
-### 切换后必须重开终端
+### 切换与运行中的会话（重要，勿用旧认知）
 
-CLI 启动时把凭证读进内存，之后磁盘怎么改都不影响已运行的会话。
+CLI **会跟随磁盘凭证变化**：`cbs use` 之后，正在运行的会话在下一次请求时自动
+切到新账号——**即时生效，不丢对话历史，不需要重启进程**。不要建议用户重开终端，
+那不是必需的步骤。
+
+真正要提防的是**多进程续期回写**：每个 CLI 进程内存里各持一份凭证副本，续期时
+写回磁盘，可能覆盖用户刚做的切换。用户报告"切了又变回去"时，先想到这个：
 
 ```
-cbs use work# 改磁盘
-# 已开的 codebuddy 会话：仍是旧账号
-# 新终端 → 新起 codebuddy → 才生效
+cbs use <别名>     → 磁盘 = 新账号
+某个旧账号的进程续期 → 写回磁盘 = 旧账号   ← 切换被覆盖
 ```
 
-**Agent 不要建议用户在正在对话的 codebuddy 会话里"切换"** —— 那不会生效，
-且可能把当前会话的登录态改掉。要提示用户"切换后重开会话"。
+处理：退出其它 CLI 进程，只留一个，然后重新 `cbs use`。诊断可看 CLI 日志
+`~/.codebuddy/logs/<日期>/*.log` 里的 `userId changed` 记录（带 pid 和时间戳）。
+
+另外两个相关事实：
+
+- **额度耗尽不会触发换号**，token 失效才会——CLI 在 401 时走恢复（重读磁盘）
+- `cbs use` 会在切换后 3 秒复核磁盘，被覆盖会直接告警
 
 ## 常见问题排查
 
@@ -134,7 +143,8 @@ cbs use work# 改磁盘
 
 按可能性排序：
 
-1. **没重开会话** —— 最常见，见上文
+1. **切换被其它进程的续期回写覆盖** —— 最常见，见上文；`cbs current` 看
+   磁盘上现在是谁，日志 `userId changed` 看谁改的
 2. **环境变量覆盖** —— 检查 `CODEBUDDY_AUTH_TOKEN` 和 `CODEBUDDY_INTERNET_ENVIRONMENT`：
    ```bash
    echo $CODEBUDDY_AUTH_TOKEN
@@ -142,7 +152,10 @@ cbs use work# 改磁盘
    ```
    有输出就 `unset` 然后重开终端。注意：这些变量可能是 CLI 注入给子进程的，
    换新终端通常就没有了
-3. **区域档位没同步** —— `cbs ls` 看区域列是否与目标账号一致：
+3. **切到的是死 token** —— `cbs use` 现在会先验活（401/403 直接提示失效），
+   若已切过去则表现为 CLI 报 401 要求 `/login`。需重新登录救活：
+   `cbs use <别名>` → CLI 内 `/login` → `cbs import --as <别名> --force`
+4. **区域档位没同步** —— `cbs ls` 看区域列是否与目标账号一致：
    ```bash
    python3 -c "import json;print(json.load(open('$HOME/.codebuddy/settings.json')).get('env'))"
    cat ~/.codebuddy/local_storage/entry_3bab*.info   # 应为 "internal" 或 "public"
@@ -175,16 +188,33 @@ cbs backup restore <时间戳>
 
 ### 切换后 CLI 报错 401 / 403
 
-token 过期了：
+token 已被服务端作废（纸面 exp 不可信）。**先试 keepalive 救活**，多数情况无需重新登录：
 
 ```bash
-cbs ls                       # Token 列会显示"需重登"
-cbs use <别名>               # 写入旧 token
-codebuddy                    # 重新登录
-cbs import --as <别名> --force# 更新库存档快照
+cbs keepalive <别名>    # accessToken 死但 refreshToken 活 → 直接救活
+cbs credits <别名>     # 查询成功即救活成功
 ```
 
-`cbs sync <别名>` 可以在 CLI 自动续期后刷新库存档快照。
+keepalive 也失败（refreshToken 同样作废）才需要重新登录：
+
+```bash
+cbs use <别名>               # 写入旧 token（会提示已失效）
+codebuddy                    # 起会话，报 401 时在会话内 /login
+cbs import --as <别名> --force# 更新库存档快照
+cbs keepalive <别名>         # 确认之后可持续保活
+```
+
+**日常保活**：建议用户配 cron，彻底免维护：
+
+```bash
+0 9 1 * * ~/.local/bin/cbs keepalive --all >> /tmp/cbs-keepalive.log 2>&1
+```
+
+注意：
+- 当前生效账号会被 keepalive 自动跳过（它由 CLI 自己续期，用库存档副本刷新
+  反而会把它登出）——这是正常行为，不是故障
+- 网页端登录领积分**不会**作废 CLI token，用户可放心在网页端登录各账号
+- `cbs sync <别名>` 可以在 CLI 自动续期后刷新库存档快照（现场凭证还是该账号时）
 
 ## 代码结构（Agent 需要读源码时）
 

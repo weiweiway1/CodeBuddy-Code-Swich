@@ -89,6 +89,7 @@ cbs import --as work
 | `cbs import --as <别名>` | 把当前登录账号存入库存档 | Import current account |
 | `cbs sync <别名>` | 把现场凭证回写库存档（CLI 续期后用） | Refresh snapshot after renewal |
 | `cbs use <别名>` | 切换账号 | Switch account |
+| `cbs keepalive --all` / `cbs keepalive <别名>` | 用 refreshToken 刷新账号，长期保活 | Refresh tokens to keep accounts alive |
 | `cbs rm <别名>` | 从库存档删除（不影响现场凭证） | Remove from store |
 | `cbs doctor` | 环境预检 | Environment check |
 | `cbs backup list\|restore\|prune` | 备份管理 | Backup management |
@@ -117,15 +118,56 @@ cbs use work --yes      # 跳过进程确认
 cbs use work --kill     # 切换前关闭运行中的 CLI
 ```
 
-### 切换后必须重开终端
+### 切换与运行中的会话
 
-CLI 在**启动时**读取凭证到内存。之后磁盘怎么改，已运行的会话都不知道。
+CLI 会**跟随磁盘凭证变化**：`cbs use` 之后，正在运行的 codebuddy 会话（以及
+VS Code 插件）在下一次请求时自动切到新账号——**即时生效，对话历史不丢，不需要
+重启进程**。
 
+但要留意**多进程续期回写**：每个 CLI 进程内存里各持一份凭证副本，token 快过期时
+会用副本里的 refreshToken 续期，并把新凭证**写回磁盘**。如果你切到账号 B 时还留着
+一个账号 A 的会话，它续期时可能把磁盘改回 A，覆盖你的切换（实测发生过：切过去约
+6 分钟后被改回）。`cbs use` 会在切换后 3 秒复核磁盘并告警。
+
+```bash
+cbs use work          # 切换，运行中的会话跟随生效
+# 建议：切换前退出其它 CLI 进程，只留一个，避免回写覆盖
 ```
-cbs use work# 改磁盘凭证
-# 你当前的 codebuddy 会话：仍是旧账号
-# 新起终端 → 新起 codebuddy → 读到新账号
+
+### 账号保活（keepalive）
+
+库存档里的账号快照会随时间**静默失效**：CLI 每次续期都会作废旧的一族 token
+（包括纸面尚未过期的），快照里的副本随之变成死 token——纸面显示"还有 8 天过期"，
+实际可能早已登录不上。
+
+`cbs keepalive` 用快照里的 refreshToken 调服务端刷新接口，换发全新 token 并存回
+库存档。刷新后 refreshToken 有效期为 **60 天**，因此：
+
+```bash
+cbs keepalive --all     # 刷新全部可保活账号
+cbs keepalive work     # 刷新指定账号
 ```
+
+**只要每 60 天内至少刷一次，账号就无限续命，不再需要重新登录。**
+
+配一个 cron 就完全不用管了（每月 1 号自动保活）：
+
+```bash
+crontab -e
+# 加入：
+0 9 1 * * ~/.local/bin/cbs keepalive --all >> /tmp/cbs-keepalive.log 2>&1
+```
+
+说明：
+
+- 当前生效账号自动跳过——它由 CLI 自己续期，用库存档旧副本刷新反而会作废现场
+  token，导致 CLI 被登出
+- accessToken 已失效（积分查询 401）但 refreshToken 尚存的账号，**可以被 keepalive
+  救活，无需重新登录**
+- refreshToken 也已作废的账号无法保活，需要重新登录一次救活：
+  `cbs use <别名>` → CLI 内 `/login` → `cbs import --as <别名> --force`
+- 网页端登录（如领积分）**不会**作废 CLI 的 token——两者是独立会话，可放心在
+  网页端登录各账号
 
 ### 环境变量会覆盖配置
 
@@ -257,6 +299,7 @@ cbs import --as work
 | `cbs import --as <alias>` | Import the currently logged-in account |
 | `cbs sync <alias>` | Refresh the stored snapshot after CLI renews its token |
 | `cbs use <alias>` | Switch accounts |
+| `cbs keepalive --all` / `cbs keepalive <alias>` | Refresh tokens to keep accounts alive |
 | `cbs rm <alias>` | Remove from the store (live credential untouched) |
 | `cbs doctor` | Environment check |
 | `cbs backup list\|restore\|prune` | Backup management |
@@ -286,16 +329,62 @@ cbs use work --yes      # skip the process confirmation prompt
 cbs use work --kill     # close running CLI sessions before switching
 ```
 
-### You must restart the terminal after switching
+### Switching and running sessions
 
-The CLI reads credentials **at startup**. Afterwards, on-disk changes are invisible to running
-sessions.
+The CLI **follows on-disk credential changes**: after `cbs use`, a running codebuddy
+session (and the VS Code plugin) picks up the new account on its next request —
+**effective immediately, no restart needed, conversation history preserved**.
 
+One caveat — **multi-process refresh write-backs**: every CLI process keeps its own
+credential copy in memory, and when its token nears expiry it refreshes using the
+refreshToken in that copy and **writes the result back to disk**. If an account-A
+session is still running when you switch to account B, its refresh can put A back on
+disk, overwriting your switch (observed in practice: overwritten ~6 minutes after
+switching). `cbs use` re-checks the disk 3 seconds after switching and warns if that
+happens.
+
+```bash
+cbs use work          # switch; running sessions follow immediately
+# tip: exit other CLI sessions before switching so there's only one writer
 ```
-cbs use work          # changes on-disk credential
-# your current codebuddy session: still the old account
-# new terminal → new codebuddy → picks up the new account
+
+### Keeping accounts alive (keepalive)
+
+Stored account snapshots **decay silently**: every CLI refresh invalidates the old
+token family (including ones whose paper expiry hasn't passed), so a stored snapshot
+becomes a dead token — showing "8 days left" on paper while login has long failed.
+
+`cbs keepalive` calls the server's refresh endpoint with the snapshot's refreshToken,
+obtains brand-new tokens, and writes them back to the store. After a refresh the
+refreshToken lives for **60 days**, so:
+
+```bash
+cbs keepalive --all     # refresh every account that can be refreshed
+cbs keepalive work      # refresh one account
 ```
+
+**Refreshing at least once every 60 days keeps accounts alive indefinitely — no more
+re-login.**
+
+A cron entry makes it fully hands-off (auto-refresh on the 1st of each month):
+
+```bash
+crontab -e
+# add:
+0 9 1 * * ~/.local/bin/cbs keepalive --all >> /tmp/cbs-keepalive.log 2>&1
+```
+
+Notes:
+
+- The currently active account is skipped automatically — the CLI refreshes it itself,
+  and refreshing from a stale store copy would invalidate the live token family and
+  log the CLI out
+- An account whose accessToken is already void (credits query 401) but whose
+  refreshToken still works **can be rescued by keepalive without re-login**
+- If the refreshToken is void too, keepalive can't help; re-login once to revive it:
+  `cbs use <alias>` → `/login` inside the CLI → `cbs import --as <alias> --force`
+- Logging in on the web portal (e.g. to claim credits) does **not** invalidate the
+  CLI's tokens — they are separate sessions, so you can freely sign in on the web
 
 ### Environment variables override config
 
