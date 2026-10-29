@@ -720,10 +720,10 @@ def cmd_ls(args):
         sys.stdout.write("\033[%dA\033[J" % (len(body) + 1))
         sys.stdout.write(draw(results) + "\n")
     else:
-        sys.stdout.write("正在查询积分...\n\n")
-        sys.stdout.flush()
+        # 管道/重定向：无法原地刷新，等查询完成后一次输出最终表
         for thread in threads:
             thread.join()
+        sys.stdout.write(draw(results) + "\n")
 
     sys.stdout.write("\n" + SHARED_HINT + "\n")
     sys.stdout.flush()
@@ -875,6 +875,31 @@ def cmd_use(args):
         return EXIT_OK
 
     with StoreLock():
+        # 0.5 保存现场：把当前生效账号的最新凭证（CLI 可能已续期过）回写库存档，
+        # 否则切走时现场凭证被覆盖，该账号的续期后 token 从此丢失，
+        # 之后切回来只能拿到导入时的旧 token（大概率已 401）。
+        try:
+            live = read_live_credential()
+            live_account = live.get("account") or {}
+            live_uid = live_account.get("uid")
+            if live_uid:
+                holder = [a for a, r in store["accounts"].items()
+                          if r.get("uid") == live_uid]
+                if holder:
+                    alias0 = holder[0]
+                    old = store["accounts"][alias0]
+                    updated = snapshot(live, alias=alias0)
+                    updated["last_used_at"] = old.get("last_used_at")
+                    store["accounts"][alias0] = updated
+                    print("已保存现场凭证到库存档：%s（uid %s）"
+                          % (alias0, live_uid[:8]))
+                else:
+                    print("当前账号（%s）不在库存档中，未保存。"
+                          "如需保留请先 `cbs import --as <别名>`。"
+                          % (live_account.get("nickname") or live_uid[:8]))
+        except CbsError:
+            print("  [警告] 读取现场凭证失败，跳过保存当前账号")
+
         # 1 进程确认：默认绝不杀
         pids = running_cli_pids()
         if pids:
