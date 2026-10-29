@@ -995,6 +995,21 @@ def cmd_use(args):
     print("目标：%s（%s，%s）" % (args.alias, record.get("nickname"), region))
     print("  Token %s：%s" % (status, note))
 
+    # 验活：纸面 exp 不可信，服务端可能已作废该 token 族。查询是只读的。
+    alive = credits_mod.query(record)
+    if not alive.get("ok"):
+        error = alive.get("error", "")
+        if "HTTP 401" in error or "HTTP 403" in error:
+            print("  [失效] 服务端已作废该账号的凭证（%s）" % error)
+            print("         切过去会登录不上，需先重新登录：")
+            print("         cbs use %s → codebuddy 内 /login → "
+                  "cbs import --as %s --force" % (args.alias, args.alias))
+        else:
+            print("  [提示] 未能验证凭证有效性：%s" % error)
+    else:
+        print("  可用积分 %s（服务端验活通过）"
+              % credits_mod.format_credits(alive.get("usable_remaining")))
+
     if args.dry_run:
         print("\n--dry-run：将执行以下动作但不落盘")
         print("  1. 备份 5 个文件到 %s" % BACKUP_DIR)
@@ -1044,7 +1059,8 @@ def cmd_use(args):
                 if not kill_pids([p[0] for p in pids]):
                     print("  [警告] 部分进程未能关闭")
             elif not args.yes:
-                print("\n切换后需重启这些进程才会生效。")
+                print("\n这些进程内存里各持一份凭证副本，续期时会把结果写回磁盘，")
+                print("可能覆盖本次切换。建议先退出它们，只保留一个 CLI 进程。")
                 if not confirm("输入 y 继续切换（不关闭进程），其它键取消: "):
                     print("已取消。")
                     return EXIT_REFUSED
@@ -1080,7 +1096,24 @@ def cmd_use(args):
         save_store(store)
         prune_backups(KEEP_BACKUPS)
 
-    print("\n已切换到 %s。新启动的 codebuddy 立即生效。" % args.alias)
+        # 8 复核：其它 CLI 进程可能用内存里的旧凭证续期并写回磁盘，
+        # 把本次切换覆盖掉。等一小段时间再看一眼。
+        if pids:
+            time.sleep(3)
+            after = None
+            try:
+                after = read_live_credential()
+                after_uid = (after.get("account") or {}).get("uid")
+            except CbsError:
+                after_uid = None
+            if after_uid and after_uid != record["uid"]:
+                print("\n[警告] 切换被覆盖了：磁盘凭证现在是 %s，不是 %s。"
+                      % ((after.get("account") or {}).get("nickname") or after_uid[:8],
+                         record.get("nickname") or record["uid"][:8]))
+                print("       其它 CLI 进程续期时写回了它自己的凭证副本。")
+                print("       请退出那些进程后重新 cbs use %s。" % args.alias)
+
+    print("\n已切换到 %s。运行中的 CLI 会跟随磁盘凭证变化。" % args.alias)
     if status in ("soon", "access-expired"):
         print("提示：CLI 首次请求会用 refreshToken 续期并回写凭证，"
               "之后请跑 `cbs sync %s` 更新库存档快照。" % args.alias)
