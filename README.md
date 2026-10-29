@@ -5,6 +5,10 @@
 
 [English](#english) | [中文](#中文)
 
+> **文档 / Documentation**
+> - [工作原理 / How It Works](docs/WORKING.md) — 凭证存储、切换机制、Token 轮换、积分查询的实测结论
+> - [开发记录 / Development Notes](docs/DEVELOPMENT.md) — 每个功能的实测依据，以及踩过的坑
+>
 > **需要协助安装或排查？** 把 [`AGENTS.md`](./AGENTS.md) 交给你的 AI Agent（Claude Code、
 > CodeBuddy Code、Cursor 等），它包含环境确认、安装流程、常见问题排查和代码结构说明。
 >
