@@ -525,6 +525,9 @@ def render_credits_line(alias, record, data, now_ms, credits_off=False):
     if data is None:
         return "-" if credits_off else "..."
     if not data.get("ok"):
+        error = data.get("error", "")
+        if "HTTP 401" in error or "HTTP 403" in error:
+            return "-"  # token 已被服务端作废，积分查不了；Token 列会标"已失效"
         return "查询失败"
     usable = credits_mod.format_credits(data.get("usable_remaining"))
     parts = [usable]
@@ -647,6 +650,17 @@ def cmd_ls(args):
     mark = {"ok": "有效", "soon": "将过期", "access-expired": "已过期",
             "dead": "需重登", "unknown": "未知"}
     has_credit_col = not args.no_credits
+
+    def token_cell(row, credit_data):
+        """Token 列以服务端真实状态为准：积分接口 401/403 = 凭证已被
+        服务端作废，纸面 exp 再长也不可信。网络错误等退回纸面判断。"""
+        status = mark.get(row["status"], row["status"])
+        if has_credit_col and credit_data and not credit_data.get("ok"):
+            error = credit_data.get("error", "")
+            if "HTTP 401" in error or "HTTP 403" in error:
+                return "已失效(需重登)"
+        return status
+
     headers = ["别名", "昵称", "区域"]
     if has_credit_col:
         headers.append("可用积分")
@@ -668,7 +682,7 @@ def cmd_ls(args):
         if has_credit_col:
             cells.append("...")
         cells += [
-            mark.get(row["status"], row["status"]),
+            token_cell(row, credit_map.get(row["alias"])),
             (row["uid"] or "")[:8],
             row["note"] + ("  [" + " / ".join(flags) + "]" if flags else ""),
         ]
@@ -680,9 +694,10 @@ def cmd_ls(args):
             cells = list(cells)
             if has_credit_col:
                 alias = rows[index]["alias"]
+                data = credit_map.get(alias) if credit_map else None
                 cells[3] = render_credits_line(
-                    alias, store["accounts"][alias],
-                    credit_map.get(alias) if credit_map else None, now_ms)
+                    alias, store["accounts"][alias], data, now_ms)
+                cells[4] = token_cell(rows[index], data)
             table.append(cells)
         widths = [max([display_width(headers[i])]
                       + [display_width(r[i]) for r in table])
